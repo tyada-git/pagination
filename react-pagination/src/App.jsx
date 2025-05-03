@@ -4,6 +4,7 @@ import viteLogo from "/vite.svg";
 import "./App.css";
 import UpcomingBEPagination from "./UpcomingBEPagination";
 import PaginationFE from "./PaginationFE";
+import NewCar from "./NewCar";
 
 function App() {
   const [count, setCount] = useState(0);
@@ -16,7 +17,7 @@ function App() {
           count is {count}
         </button>
       </div> */}
-      <PaginationFE />
+      <NewCar />
     </>
   );
 }
