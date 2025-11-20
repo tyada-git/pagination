@@ -1,19 +1,23 @@
 name: LLM Test Suggester
 
-# This workflow analyzes the git diff of a pull request and asks an LLM
-# (via the OpenAI API) to suggest targeted tests to run. The suggestions
-# are posted as a comment on the PR.
+# This workflow analyzes the git diff of a pull request and asks Claude (Anthropic)
+# to suggest targeted tests to run. The suggestions are posted as a comment on the PR.
 #
 # Requirements:
-# - Set repository secret `OPENAI_API_KEY` with a valid OpenAI API key.
+# - Set repository secret `ANTHROPIC_API_KEY` with a valid Anthropic (Claude) API key.
 # - This workflow uses `pull_request_target` to allow access to repo secrets.
 #   WARNING: `pull_request_target` runs workflow code from the base branch,
 #   but it checks out the PR HEAD for diff computation. Be mindful of
 #   security implications when running with secrets (forked PRs may be restricted).
+# - Claude models used: claude-3-5-sonnet (fast, good quality)
 
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, edited]
+
+concurrency:
+  group: llm-test-suggester-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   analyze-diff:
@@ -45,13 +49,13 @@ jobs:
 
       - name: Ask LLM for test suggestions
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_EVENT_PATH: ${{ github.event_path }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           python - <<'PY'
-          import os, json, sys, urllib.request
+          import os, json, sys, urllib.request, urllib.error, time, random
 
           # Load diff
           try:
@@ -61,8 +65,8 @@ jobs:
 
           changed_files = open('changed_files.txt','r',encoding='utf-8').read()
 
-          if not os.getenv('OPENAI_API_KEY'):
-              print('OPENAI_API_KEY not set; exiting')
+          if not os.getenv('ANTHROPIC_API_KEY'):
+              print('ANTHROPIC_API_KEY not set; exiting')
               sys.exit(0)
 
           system_msg = (
@@ -74,35 +78,59 @@ jobs:
           user_msg = 'Changed files:\n' + changed_files + '\n\nDiff:\n' + diff[:20000]
 
           payload = {
-              'model': 'gpt-4o-mini',
-              'messages': [
-                  {'role': 'system', 'content': system_msg},
-                  {'role': 'user', 'content': user_msg}
-              ],
+              'model': 'claude-3-5-sonnet-20241022',
               'max_tokens': 800,
-              'temperature': 0.0
+              'system': system_msg,
+              'messages': [
+                  {'role': 'user', 'content': user_msg}
+              ]
           }
 
-          req = urllib.request.Request(
-              'https://api.openai.com/v1/chat/completions',
-              data=json.dumps(payload).encode('utf-8'),
-              headers={
-                  'Content-Type': 'application/json',
-                  'Authorization': 'Bearer ' + os.environ['OPENAI_API_KEY']
-              }
-          )
+          def call_claude_with_retries(payload, max_retries=5):
+              delay = 1.0
+              for attempt in range(1, max_retries+1):
+                  try:
+                      req = urllib.request.Request(
+                          'https://api.anthropic.com/v1/messages',
+                          data=json.dumps(payload).encode('utf-8'),
+                          headers={
+                              'Content-Type': 'application/json',
+                              'x-api-key': os.environ['ANTHROPIC_API_KEY'],
+                              'anthropic-version': '2023-06-01'
+                          }
+                      )
+                      with urllib.request.urlopen(req, timeout=60) as resp:
+                          return json.load(resp)
+                  except urllib.error.HTTPError as e:
+                      body = e.read().decode('utf-8', errors='replace')
+                      retry_after = e.headers.get('Retry-After')
+                      print(f'HTTPError status={e.code}, attempt={attempt}/{max_retries}, retry-after={retry_after}')
+                      print(f'Error body: {body[:1000]}')
+                      if e.code == 429:
+                          if retry_after:
+                              wait = float(retry_after)
+                          else:
+                              wait = delay + random.uniform(0, 1.0)
+                          print(f'Rate limited. Waiting {wait:.1f}s before retry...')
+                          time.sleep(wait)
+                          delay *= 2
+                          continue
+                      else:
+                          raise
+                  except Exception as e:
+                      print(f'Request failed (attempt {attempt}/{max_retries}):', e)
+                      if attempt < max_retries:
+                          time.sleep(delay + random.uniform(0, 1.0))
+                          delay *= 2
+                      else:
+                          raise
+              raise RuntimeError('Max retries exceeded for Claude API')
 
-          try:
-              with urllib.request.urlopen(req, timeout=60) as resp:
-                  result = json.load(resp)
-          except Exception as e:
-              print('LLM request failed:', e)
-              sys.exit(0)
-
-          suggestion = result['choices'][0]['message']['content'].strip()
+          result = call_claude_with_retries(payload)
+          suggestion = result['content'][0]['text'].strip()
 
           # Prepare comment body
-          header = '### 🤖 LLM Test Suggestions\n\n'
+          header = '### 🤖 Claude Test Suggestions\n\n'
           body = header + suggestion
 
           # Read event to get PR number
