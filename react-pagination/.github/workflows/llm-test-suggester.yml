@@ -1,0 +1,135 @@
+name: LLM Test Suggester
+
+# This workflow analyzes the git diff of a pull request and asks an LLM
+# (via the OpenAI API) to suggest targeted tests to run. The suggestions
+# are posted as a comment on the PR.
+#
+# Requirements:
+# - Set repository secret `OPENAI_API_KEY` with a valid OpenAI API key.
+# - This workflow uses `pull_request_target` to allow access to repo secrets.
+#   WARNING: `pull_request_target` runs workflow code from the base branch,
+#   but it checks out the PR HEAD for diff computation. Be mindful of
+#   security implications when running with secrets (forked PRs may be restricted).
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited]
+
+jobs:
+  analyze-diff:
+    name: Analyze PR diff and ask LLM
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout base branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch PR head and base
+        run: |
+          echo "Base ref: ${{ github.event.pull_request.base.ref }}"
+          echo "Head sha: ${{ github.event.pull_request.head.sha }}"
+          git fetch --no-tags --prune --depth=1 origin ${{ github.event.pull_request.base.ref }}
+          git fetch --no-tags --prune --depth=1 origin ${{ github.event.pull_request.head.ref }}
+
+      - name: Create full diff
+        run: |
+          BASE=origin/${{ github.event.pull_request.base.ref }}
+          HEAD=${{ github.event.pull_request.head.sha }}
+          git --no-pager diff --no-color $BASE...$HEAD > full_diff.patch || true
+          git --no-pager diff --name-only $BASE...$HEAD > changed_files.txt || true
+          echo "Diff size: $(wc -c < full_diff.patch) bytes"
+
+      - name: Ask LLM for test suggestions
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          import os, json, sys, urllib.request
+
+          # Load diff
+          try:
+              diff = open('full_diff.patch', 'r', encoding='utf-8').read()
+          except Exception:
+              diff = ''
+
+          changed_files = open('changed_files.txt','r',encoding='utf-8').read()
+
+          if not os.getenv('OPENAI_API_KEY'):
+              print('OPENAI_API_KEY not set; exiting')
+              sys.exit(0)
+
+          system_msg = (
+              'You are an assistant that analyzes a git diff and returns a concise, actionable list of tests to run. '
+              'For each relevant change, suggest: (1) what to test (unit/integration/e2e), (2) specific files or test names to run or add, and (3) why the test matters. '
+              'Be brief and use bullet points. If the diff contains many unrelated files, group suggestions by area or file path.'
+          )
+
+          user_msg = 'Changed files:\n' + changed_files + '\n\nDiff:\n' + diff[:20000]
+
+          payload = {
+              'model': 'gpt-4o-mini',
+              'messages': [
+                  {'role': 'system', 'content': system_msg},
+                  {'role': 'user', 'content': user_msg}
+              ],
+              'max_tokens': 800,
+              'temperature': 0.0
+          }
+
+          req = urllib.request.Request(
+              'https://api.openai.com/v1/chat/completions',
+              data=json.dumps(payload).encode('utf-8'),
+              headers={
+                  'Content-Type': 'application/json',
+                  'Authorization': 'Bearer ' + os.environ['OPENAI_API_KEY']
+              }
+          )
+
+          try:
+              with urllib.request.urlopen(req, timeout=60) as resp:
+                  result = json.load(resp)
+          except Exception as e:
+              print('LLM request failed:', e)
+              sys.exit(0)
+
+          suggestion = result['choices'][0]['message']['content'].strip()
+
+          # Prepare comment body
+          header = '### 🤖 LLM Test Suggestions\n\n'
+          body = header + suggestion
+
+          # Read event to get PR number
+          evpath = os.environ.get('GITHUB_EVENT_PATH')
+          pr_num = None
+          if evpath and os.path.exists(evpath):
+              ev = json.load(open(evpath))
+              pr_num = ev.get('number') or ev.get('pull_request', {}).get('number')
+
+          if not pr_num:
+              print('PR number not found in event payload; skipping comment')
+              print(body)
+              sys.exit(0)
+
+          comment = {'body': body}
+
+          api_url = f'https://api.github.com/repos/{os.environ["GITHUB_REPOSITORY"]}/issues/{pr_num}/comments'
+          req2 = urllib.request.Request(api_url, data=json.dumps(comment).encode('utf-8'),
+                                        headers={'Authorization': 'token ' + os.environ['GITHUB_TOKEN'], 'Content-Type': 'application/json'})
+          try:
+              with urllib.request.urlopen(req2) as resp2:
+                  print('Posted comment, status', resp2.status)
+          except Exception as e:
+              print('Failed to post comment:', e)
+          PY
+
+      - name: Output summary
+        run: |
+          echo "Changed files:"
+          cat changed_files.txt || true

@@ -5,6 +5,7 @@ import "./App.css";
 import UpcomingBEPagination from "./UpcomingBEPagination";
 import PaginationFE from "./PaginationFE";
 import NewCar from "./NewCar";
+import VirtualizedList from "./Virtualization";
 
 function App() {
   const [count, setCount] = useState(0);
@@ -17,7 +18,8 @@ function App() {
           count is {count}
         </button>
       </div> */}
-      <NewCar />
+      {/* <NewCar /> */}
+      <VirtualizedList />
     </>
   );
 }
