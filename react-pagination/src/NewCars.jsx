@@ -28,6 +28,14 @@ const NewCars = () => {
             />
             xuv
           </div>
+           <div>
+            <input
+              type="checkbox"
+              checked={childCh ? childCh : pchecked}
+              onChange={handleChild}
+            />
+            xuv300
+          </div>
           <div>
             <input
               type="checkbox"
