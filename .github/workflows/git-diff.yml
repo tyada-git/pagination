@@ -1,0 +1,53 @@
+name: LLM Test Suggester (GitHub AI Native)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute diff
+        run: |
+          BASE=${{ github.event.pull_request.base.ref }}
+          HEAD=${{ github.event.pull_request.head.sha }}
+          git fetch origin $BASE --depth=1
+          git --no-pager diff --no-color origin/$BASE...$HEAD > full_diff.patch
+          git --no-pager diff --name-only origin/$BASE...$HEAD > changed_files.txt
+
+      - name: Prepare AI prompt
+        run: |
+          echo "Analyze the following git diff and produce:" > prompt.txt
+          echo "- Unit/integration/E2E tests required" >> prompt.txt
+          echo "- Exact test names or files" >> prompt.txt
+          echo "- Why each test matters" >> prompt.txt
+          echo "" >> prompt.txt
+          echo "Changed files:" >> prompt.txt
+          cat changed_files.txt >> prompt.txt
+          echo "" >> prompt.txt
+          echo "Diff content (truncated to 20k chars):" >> prompt.txt
+          head -c 20000 full_diff.patch >> prompt.txt
+
+      - name: Invoke GitHub AI
+        id: ai
+        uses: github/ai@v1
+        with:
+          prompt: ${{ github.workspace }}/prompt.txt
+
+      - name: Post PR Comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BODY="### 🤖 GitHub AI Test Suggestions\n\n${{ steps.ai.outputs.response }}"
+          gh pr comment ${{ github.event.pull_request.number }} --body "$BODY"
