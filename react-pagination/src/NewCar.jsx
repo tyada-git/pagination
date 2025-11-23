@@ -44,6 +44,14 @@ const NewCar = () => {
             />
             nanno
           </div>
+           <div>
+            <input
+              type="checkbox"
+              checked={childCh ? childCh : pchecked}
+              onChange={handleChild}
+            />
+            nanno 2
+          </div>
         </div>
       </div>
     </>
