@@ -7,7 +7,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
-  models: read
+  models: read 
 
 jobs:
   analyze:
@@ -23,6 +23,7 @@ jobs:
         run: |
           BASE=${{ github.event.pull_request.base.ref }}
           HEAD=${{ github.event.pull_request.head.sha }}
+
           git fetch origin $BASE --depth=1
           git --no-pager diff --no-color origin/$BASE...$HEAD > full_diff.patch
           git --no-pager diff --name-only origin/$BASE...$HEAD > changed_files.txt
@@ -42,9 +43,9 @@ jobs:
 
       - name: Invoke GitHub AI
         id: ai
-        uses: github/ai@v1
+        uses: actions/ai-inference@v1
         with:
-          prompt: ${{ github.workspace }}/prompt.txt
+          prompt-file: prompt.txt
 
       - name: Post PR Comment
         env:
