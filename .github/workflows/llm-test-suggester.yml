@@ -75,7 +75,7 @@ jobs:
               'Be brief and use bullet points. If the diff contains many unrelated files, group suggestions by area or file path.'
           )
 
-          user_msg = 'Changed files:\n' + changed_files + '\n\nDiff:\n' + diff[:20000]
+          user_msg = 'Changed files:\n' + changed_files + '\n\nDiff:\n' + diff[:12000]
 
           payload = {
               'model': 'claude-3-5-sonnet-20241022',
