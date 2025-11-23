@@ -7,37 +7,48 @@ on:
 permissions:
   contents: read
   pull-requests: write
-  models: read 
+  models: read
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout PR head
+      - name: Checkout PR code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0   # we will refetch full SHAs later
 
-      - name: Compute diff
+      - name: Compute Diff Safely (using SHAs)
         run: |
-          BASE=${{ github.event.pull_request.base.ref }}
-          HEAD=${{ github.event.pull_request.head.sha }}
+          BASE_SHA=${{ github.event.pull_request.base.sha }}
+          HEAD_SHA=${{ github.event.pull_request.head.sha }}
 
-          git fetch origin $BASE --depth=1
-          git --no-pager diff --no-color origin/$BASE...$HEAD > full_diff.patch
-          git --no-pager diff --name-only origin/$BASE...$HEAD > changed_files.txt
+          echo "Base SHA: $BASE_SHA"
+          echo "Head SHA: $HEAD_SHA"
 
-      - name: Prepare AI prompt
+          # Fetch the exact SHAs to guarantee merge-base exists
+          git fetch origin +$BASE_SHA:$BASE_SHA
+          git fetch origin +$HEAD_SHA:$HEAD_SHA
+
+          # Generate diff and file list
+          git --no-pager diff --no-color $BASE_SHA...$HEAD_SHA > full_diff.patch || true
+          git --no-pager diff --name-only $BASE_SHA...$HEAD_SHA > changed_files.txt || true
+
+          echo "Diff size: $(wc -c < full_diff.patch) bytes"
+
+      - name: Prepare AI Prompt
         run: |
           echo "Analyze the following git diff and produce:" > prompt.txt
-          echo "- Unit/integration/E2E tests required" >> prompt.txt
-          echo "- Exact test names or files" >> prompt.txt
+          echo "- Required Unit/Integration/E2E tests" >> prompt.txt
+          echo "- Exact test file names or new tests to add" >> prompt.txt
           echo "- Why each test matters" >> prompt.txt
           echo "" >> prompt.txt
+
           echo "Changed files:" >> prompt.txt
           cat changed_files.txt >> prompt.txt
           echo "" >> prompt.txt
+
           echo "Diff content (truncated to 20k chars):" >> prompt.txt
           head -c 20000 full_diff.patch >> prompt.txt
 
@@ -46,6 +57,7 @@ jobs:
         uses: actions/ai-inference@v1
         with:
           prompt-file: prompt.txt
+          max-tokens: 800
 
       - name: Post PR Comment
         env:
