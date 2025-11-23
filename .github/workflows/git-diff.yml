@@ -17,45 +17,48 @@ jobs:
       - name: Checkout PR code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # we will refetch full SHAs later
+          fetch-depth: 0   # full history required for SHAs
 
-      - name: Compute Diff Safely (using SHAs)
+      - name: Compute Diff Safely (SHA → SHA)
         run: |
-          BASE_SHA=${{ github.event.pull_request.base.sha }}
-          HEAD_SHA=${{ github.event.pull_request.head.sha }}
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
 
           echo "Base SHA: $BASE_SHA"
           echo "Head SHA: $HEAD_SHA"
 
-          # Fetch the exact SHAs to guarantee merge-base exists
-          git fetch origin +$BASE_SHA:$BASE_SHA
-          git fetch origin +$HEAD_SHA:$HEAD_SHA
+          # Fetch both SHAs explicitly
+          git fetch origin +$BASE_SHA:$BASE_SHA || true
+          git fetch origin +$HEAD_SHA:$HEAD_SHA || true
 
-          # Generate diff and file list
-          git --no-pager diff --no-color $BASE_SHA...$HEAD_SHA > full_diff.patch || true
-          git --no-pager diff --name-only $BASE_SHA...$HEAD_SHA > changed_files.txt || true
+          # Generate diff and file list (fallback to empty diff)
+          git --no-pager diff --no-color $BASE_SHA...$HEAD_SHA > full_diff.patch || echo "" > full_diff.patch
+          git --no-pager diff --name-only $BASE_SHA...$HEAD_SHA > changed_files.txt || echo "" > changed_files.txt
 
-          echo "Diff size: $(wc -c < full_diff.patch) bytes"
+          echo "Diff bytes: $(wc -c < full_diff.patch)"
 
       - name: Prepare AI Prompt
         run: |
-          echo "Analyze the following git diff and produce:" > prompt.txt
-          echo "- Required Unit/Integration/E2E tests" >> prompt.txt
-          echo "- Exact test file names or new tests to add" >> prompt.txt
-          echo "- Why each test matters" >> prompt.txt
-          echo "" >> prompt.txt
-
-          echo "Changed files:" >> prompt.txt
-          cat changed_files.txt >> prompt.txt
-          echo "" >> prompt.txt
-
-          echo "Diff content (truncated to 20k chars):" >> prompt.txt
-          head -c 20000 full_diff.patch >> prompt.txt
+          {
+            echo "You are a senior QA automation engineer."
+            echo "Analyze the git diff and produce:"
+            echo "- Required Unit / Integration / E2E tests"
+            echo "- Exact file names for new or updated tests"
+            echo "- Why each test is important"
+            echo "- Edge cases and regression risks"
+            echo ""
+            echo "Changed files:"
+            cat changed_files.txt
+            echo ""
+            echo "Diff content (first 20k chars):"
+            head -c 20000 full_diff.patch
+          } > prompt.txt
 
       - name: Invoke GitHub AI
         id: ai
         uses: actions/ai-inference@v1
         with:
+          model: 'gpt-4o-mini'   # explicit model recommended
           prompt-file: prompt.txt
           max-tokens: 800
 
@@ -63,5 +66,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          BODY="### 🤖 GitHub AI Test Suggestions\n\n${{ steps.ai.outputs.response }}"
-          gh pr comment ${{ github.event.pull_request.number }} --body "$BODY"
+          # GitHub CLI cannot handle raw multi-line env var directly,
+          # so we write the response into a file.
+          echo "### 🤖 GitHub AI Test Suggestions" > comment.md
+          echo "" >> comment.md
+          echo "${{ steps.ai.outputs.response }}" >> comment.md
+
+          gh pr comment ${{ github.event.pull_request.number }} --body-file comment.md
